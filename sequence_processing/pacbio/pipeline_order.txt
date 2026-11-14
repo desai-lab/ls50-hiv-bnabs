@@ -1,0 +1,7 @@
+bamfastq_conv.sbatch
+init_filter.sbatch
+grab_barcodes.sbatch
+extract_barcodes.sbatch
+run_starcode.sbatch
+merge_clusters.sbatch
+submit_ec_pipeline.sh
