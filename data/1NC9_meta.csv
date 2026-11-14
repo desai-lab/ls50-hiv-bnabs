@@ -1,0 +1,11 @@
+site,chain,kabat_position,imgt_position,region,germline_aa,mature_aa
+site_0,heavy,10,11,FR1,E,Q
+site_1,heavy,19,20,FR1,K,T
+site_2,heavy,34,39,FR2,M,I
+site_3,heavy,52,57,CDR2,N,D
+site_4,heavy,53,59,CDR2,S,R
+site_5,heavy,54,62,CDR2,G,R
+site_6,heavy,56,64,CDR2,S,R
+site_7,heavy,57,65,CDR2,T,P
+site_8,heavy,73,82,FR3,T,I
+site_9,heavy,85,97,FR3,E,D
