@@ -1,0 +1,483 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "id": "ggLczbCTAXH1"
+   },
+   "source": [
+    "# Observed vs. predicted fit figures\n",
+    "\n",
+    "Builds the two supplement figures from the BEST Tobit fits:\n",
+    "\n",
+    "1. **Full grid**: 18 panels, every antibody-antigen complex, titled with the selected\n",
+    "   interaction order and the regularization behind that fit.\n",
+    "2. **Selected sites**: observed vs. predicted for one complex, split by germline or\n",
+    "   mutant at a chosen site. Works for any antibody, antigen, and site.\n",
+    "\n",
+    "Observed values are replicate averages per genotype from `{antibody}_kds.csv`.\n",
+    "Predictions are `predicted_kd_full` from `{antibody}_{antigen}_BEST_df_all.csv`.\n",
+    "Both are censored at the 6.0 detection floor."
+   ],
+   "id": "ggLczbCTAXH1"
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "id": "s-EClE43AXH4"
+   },
+   "source": [
+    "## Configuration"
+   ],
+   "id": "s-EClE43AXH4"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "id": "ODhEToWfAXH5"
+   },
+   "outputs": [],
+   "source": [
+    "import os\n",
+    "import numpy as np\n",
+    "import pandas as pd\n",
+    "import matplotlib.pyplot as plt\n",
+    "from matplotlib import gridspec\n",
+    "from matplotlib.ticker import FormatStrFormatter\n",
+    "from matplotlib.lines import Line2D\n",
+    "\n",
+    "data_dir = \"../data\"\n",
+    "fig_dir = \"../figures\"\n",
+    "os.makedirs(fig_dir, exist_ok=True)\n",
+    "png_dpi = 300\n",
+    "\n",
+    "plt.rcParams[\"svg.fonttype\"] = \"path\"\n",
+    "plt.rcParams[\"pdf.fonttype\"] = 42\n",
+    "\n",
+    "antigen_hex = {\"CH505TF\": \"#E66100\", \"SF162\": \"#5D3A9B\"}\n",
+    "germ_hex = \"#386A4F\"\n",
+    "mut_hex = \"#D48DA6\"\n",
+    "\n",
+    "c_ink = \"#1a1a2e\"\n",
+    "c_muted = \"#6b6b7b\"\n",
+    "c_line = \"#e3e3ea\"\n",
+    "c_spine = \"#333333\"\n",
+    "c_identity = \"#444444\"\n",
+    "\n",
+    "floor = 6.0         # Tobit detection floor in -log10 Kd units\n",
+    "jitter_band = 0.15  # censored points spread into a band below the floor\n",
+    "jitter_seed = 0\n",
+    "tick_step = 0.5     # shared x and y tick spacing\n",
+    "\n",
+    "xlabel = r\"Measured Binding Affinity ($-\\log_{10}\\mathrm{K_D}$)\"\n",
+    "ylabel = r\"Inferred Binding Affinity ($-\\log_{10}\\mathrm{K_D}$)\"\n",
+    "\n",
+    "included_abs = [\"CH235.12\", \"1NC9\", \"N49P7\", \"VRC01\", \"VRC07\", \"VRC13\"]\n",
+    "excluded_abs = [\"NIH45-46\", \"VRC-PG20\", \"VRC16\"]\n",
+    "grid_abs = included_abs + excluded_abs\n",
+    "\n",
+    "stem_map = {\"CH235.12\": \"CH235_12\", \"1NC9\": \"1NC9\", \"N49P7\": \"N49P7\", \"VRC01\": \"VRC01\",\n",
+    "            \"VRC07\": \"VRC07\", \"VRC13\": \"VRC13\", \"NIH45-46\": \"NIH4546\",\n",
+    "            \"VRC-PG20\": \"VRCPG20\", \"VRC16\": \"VRC16\"}\n",
+    "\n",
+    "site_cols = [f\"site_{i}\" for i in range(10)]"
+   ],
+   "id": "ODhEToWfAXH5"
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "id": "KueVuUc6AXH6"
+   },
+   "source": [
+    "### Regularization behind each best fit"
+   ],
+   "id": "KueVuUc6AXH6"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "id": "XBNbTdXlAXH7"
+   },
+   "outputs": [],
+   "source": [
+    "alphas = {\n",
+    "    (\"CH235.12\", \"CH505TF\"): (0.1, 0.1),  (\"CH235.12\", \"SF162\"): (0.1, 0.1),\n",
+    "    (\"1NC9\", \"CH505TF\"): (0.1, 0),        (\"1NC9\", \"SF162\"): (0.1, 0),\n",
+    "    (\"N49P7\", \"CH505TF\"): (0.1, 1),       (\"N49P7\", \"SF162\"): (0.1, 0),\n",
+    "    (\"VRC01\", \"CH505TF\"): (0.1, 0),       (\"VRC01\", \"SF162\"): (0.1, 0),\n",
+    "    (\"VRC07\", \"CH505TF\"): (0.1, 0),       (\"VRC07\", \"SF162\"): (0.1, 0),\n",
+    "    (\"VRC13\", \"CH505TF\"): (1, 0),         (\"VRC13\", \"SF162\"): (1, 0.001),\n",
+    "    (\"NIH45-46\", \"CH505TF\"): (0.1, 0),    (\"NIH45-46\", \"SF162\"): (0.1, 0),\n",
+    "    (\"VRC-PG20\", \"CH505TF\"): (0.1, 1),    (\"VRC-PG20\", \"SF162\"): (1, 0),\n",
+    "    (\"VRC16\", \"CH505TF\"): (0.1, 0.01),    (\"VRC16\", \"SF162\"): (1, 0.001),\n",
+    "}\n",
+    "\n",
+    "orders_from_tab = {\n",
+    "    (\"CH235.12\", \"CH505TF\"): 3, (\"CH235.12\", \"SF162\"): 2,\n",
+    "    (\"1NC9\", \"CH505TF\"): 4,     (\"1NC9\", \"SF162\"): 3,\n",
+    "    (\"N49P7\", \"CH505TF\"): 2,    (\"N49P7\", \"SF162\"): 5,\n",
+    "    (\"VRC01\", \"CH505TF\"): 5,    (\"VRC01\", \"SF162\"): 2,\n",
+    "    (\"VRC07\", \"CH505TF\"): 4,    (\"VRC07\", \"SF162\"): 4,\n",
+    "    (\"VRC13\", \"CH505TF\"): 2,    (\"VRC13\", \"SF162\"): 2,\n",
+    "    (\"NIH45-46\", \"CH505TF\"): 5, (\"NIH45-46\", \"SF162\"): 4,\n",
+    "    (\"VRC-PG20\", \"CH505TF\"): 2, (\"VRC-PG20\", \"SF162\"): 2,\n",
+    "    (\"VRC16\", \"CH505TF\"): 5,    (\"VRC16\", \"SF162\"): 2,\n",
+    "}\n",
+    "\n",
+    "# panels making up the selected-sites supplement figure\n",
+    "site_specs = [(\"NIH45-46\", \"SF162\", \"N52K\"),\n",
+    "              (\"VRC-PG20\", \"CH505TF\", \"S54W\"),\n",
+    "              (\"VRC16\", \"SF162\", \"R83T\")]"
+   ],
+   "id": "XBNbTdXlAXH7"
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "id": "ru2WatiRAXH7"
+   },
+   "source": [
+    "## Loading and stats"
+   ],
+   "id": "ru2WatiRAXH7"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "id": "-Y88mzV2AXH7"
+   },
+   "outputs": [],
+   "source": [
+    "# Observed, predicted, and selected order for one antibody-antigen complex\n",
+    "\n",
+    "def load_complex(ab, ag):\n",
+    "    s = stem_map[ab]\n",
+    "    kds = pd.read_csv(f\"{data_dir}/{s}_kds.csv\")\n",
+    "    sub = kds[kds[\"antigen\"] == ag].copy()\n",
+    "    sub[\"tok\"] = sub[site_cols].agg(\"\".join, axis=1)  # G/M string, site_0 leftmost\n",
+    "    obs = sub.groupby(\"tok\")[\"nlog10_Kd\"].mean().dropna()\n",
+    "\n",
+    "    dfa = pd.read_csv(f\"{data_dir}/{s}_{ag}_BEST_df_all.csv\")\n",
+    "    dfa[\"tok\"] = dfa[site_cols].agg(\"\".join, axis=1)\n",
+    "    pred = dfa.set_index(\"tok\")[\"predicted_kd_full\"].reindex(obs.index)\n",
+    "\n",
+    "    order = int(pd.read_csv(f\"{data_dir}/{s}_{ag}_BEST_df_params.csv\")[\"order\"].max())\n",
+    "    return dict(geno=obs.index.to_numpy(), obs=obs.to_numpy(),\n",
+    "                pred=pred.to_numpy(), order=order)\n",
+    "\n",
+    "\n",
+    "# Mutation labels per site index, for example N52K at index 4\n",
+    "def site_labels(ab):\n",
+    "    meta = pd.read_csv(f\"{data_dir}/{stem_map[ab]}_meta.csv\").reset_index(drop=True)\n",
+    "    return (meta[\"germline_aa\"].astype(str) + meta[\"kabat_position\"].astype(str)\n",
+    "            + meta[\"mature_aa\"].astype(str)).tolist()\n",
+    "\n",
+    "# Accept a site as an index 0 to 9 or as a label like N52K\n",
+    "def site_index(ab, site):\n",
+    "    if isinstance(site, (int, np.integer)):\n",
+    "        return int(site)\n",
+    "    labels = site_labels(ab)\n",
+    "    if site not in labels:\n",
+    "        raise ValueError(f\"{site} not a site of {ab}. options: {labels}\")\n",
+    "    return labels.index(site)\n",
+    "\n",
+    "\n",
+    "def fit_stats(obs, pred):\n",
+    "    return np.corrcoef(obs, pred)[0, 1], float(np.sqrt(np.mean((obs - pred) ** 2)))\n",
+    "\n",
+    "\n",
+    "def alpha_line(ab, ag):\n",
+    "    a = alphas.get((ab, ag))\n",
+    "    return None if a is None else f\"L1 = {a[0]:g}, L2 = {a[1]:g}\"\n",
+    "\n",
+    "# Spread floor-censored points below the threshold so the pile-up is readable\n",
+    "def jitter_censored(obs, pred, rng):\n",
+    "    x, y = obs.copy(), pred.copy()\n",
+    "    xf, yf = obs == floor, pred == floor\n",
+    "    x[xf] = floor - rng.uniform(0, jitter_band, int(xf.sum()))\n",
+    "    y[yf] = floor - rng.uniform(0, jitter_band, int(yf.sum()))\n",
+    "    return x, y"
+   ],
+   "id": "-Y88mzV2AXH7"
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "id": "WdMp4wc3AXH9"
+   },
+   "source": [
+    "## Shared styling"
+   ],
+   "id": "WdMp4wc3AXH9"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "id": "DOLVtGlOAXH9"
+   },
+   "outputs": [],
+   "source": [
+    "def shared_range(complexes):\n",
+    "    vals = np.concatenate([np.concatenate([c[\"obs\"], c[\"pred\"]]) for c in complexes])\n",
+    "    lo, hi = np.nanmin(vals), np.nanmax(vals)\n",
+    "    pad = 0.04 * (hi - lo)\n",
+    "    return lo - pad, hi + pad\n",
+    "\n",
+    "\n",
+    "def style_axes(ax, lo, hi):\n",
+    "    ax.set_xlim(lo, hi)\n",
+    "    ax.set_ylim(lo, hi)\n",
+    "    ax.set_aspect(\"equal\")\n",
+    "    ax.plot([lo, hi], [lo, hi], ls=\"--\", lw=0.8, color=c_identity, zorder=1)\n",
+    "    for s in ax.spines.values():\n",
+    "        s.set_color(c_spine)\n",
+    "        s.set_linewidth(1.0)\n",
+    "    ticks = np.arange(np.ceil(lo / tick_step) * tick_step, hi + 1e-9, tick_step)\n",
+    "    ax.set_xticks(ticks)\n",
+    "    ax.set_yticks(ticks)\n",
+    "    ax.xaxis.set_major_formatter(FormatStrFormatter(\"%.1f\"))\n",
+    "    ax.yaxis.set_major_formatter(FormatStrFormatter(\"%.1f\"))\n",
+    "    ax.tick_params(length=3, labelsize=7, colors=c_muted, labelcolor=c_ink)\n",
+    "    ax.grid(True, color=\"#f0f0f4\", lw=0.6, zorder=0)\n",
+    "\n",
+    "\n",
+    "def stat_box(ax, lines):\n",
+    "    ax.text(0.04, 0.96, \"\\n\".join(lines), transform=ax.transAxes, va=\"top\", ha=\"left\",\n",
+    "            fontsize=6.2, color=c_ink, linespacing=1.35,\n",
+    "            bbox=dict(boxstyle=\"round,pad=0.3\", fc=\"white\", ec=c_line, lw=0.6, alpha=0.9))\n",
+    "\n",
+    "\n",
+    "def group_header(fig, axes, text, dy=0.032):\n",
+    "    \"\"\"Center an antibody label above the pair of antigen panels below it.\"\"\"\n",
+    "    pos = [a.get_position() for a in axes]\n",
+    "    xc = (min(p.x0 for p in pos) + max(p.x1 for p in pos)) / 2\n",
+    "    fig.text(xc, max(p.y1 for p in pos) + dy, text, ha=\"center\", va=\"bottom\",\n",
+    "             fontsize=10.5, color=c_ink, weight=\"bold\")\n",
+    "\n",
+    "\n",
+    "def save_figure(fig, name):\n",
+    "    \"\"\"Write png, pdf, and svg, then confirm the svg carries no live text.\"\"\"\n",
+    "    for ext in (\"png\", \"pdf\", \"svg\"):\n",
+    "        fig.savefig(f\"{fig_dir}/{name}.{ext}\", dpi=png_dpi, bbox_inches=\"tight\")\n",
+    "    svg = open(f\"{fig_dir}/{name}.svg\").read()\n",
+    "    assert svg.count(\"<text\") == 0, \"live text in svg, set svg.fonttype='path'\"\n",
+    "    print(name, \"saved (png, pdf, svg)\")"
+   ],
+   "id": "DOLVtGlOAXH9"
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "id": "GaNA1zDFAXH-"
+   },
+   "source": [
+    "## Figure 1: full grid"
+   ],
+   "id": "GaNA1zDFAXH-"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "id": "ix7SyL-DAXH_"
+   },
+   "outputs": [],
+   "source": [
+    "def build_grid():\n",
+    "    \"\"\"18 panel observed vs predicted grid, one antibody pair per column block.\"\"\"\n",
+    "    cells = [c for ab in grid_abs for c in ((ab, \"CH505TF\"), (ab, \"SF162\"))]\n",
+    "    data = [load_complex(ab, ag) for ab, ag in cells]\n",
+    "    lo, hi = shared_range(data)\n",
+    "\n",
+    "    fig = plt.figure(figsize=(13.5, 8.1))\n",
+    "    gs = gridspec.GridSpec(3, 6, figure=fig, hspace=0.82, wspace=0.30,\n",
+    "                           left=0.085, right=0.985, top=0.79, bottom=0.11)\n",
+    "    axes = []\n",
+    "    for cell, (ab, ag) in enumerate(cells):\n",
+    "        row, col = divmod(cell, 6)\n",
+    "        ax = fig.add_subplot(gs[row, col])\n",
+    "        axes.append(ax)\n",
+    "        d = data[cell]\n",
+    "        style_axes(ax, lo, hi)\n",
+    "        ax.scatter(d[\"obs\"], d[\"pred\"], s=7, c=antigen_hex[ag], alpha=0.5,\n",
+    "                   linewidths=0, zorder=2)\n",
+    "        r, rmse = fit_stats(d[\"obs\"], d[\"pred\"])\n",
+    "        stat_box(ax, [f\"r={r:.3f}\", f\"RMSE={rmse:.3f}\", f\"n={len(d['obs'])}\"])\n",
+    "\n",
+    "        title = f\"best-fit order: {d['order']}\"\n",
+    "        params = alpha_line(ab, ag)\n",
+    "        if params:\n",
+    "            title += f\"\\n{params}\"\n",
+    "        ax.set_title(title, fontsize=8.5, color=c_ink, pad=4)\n",
+    "\n",
+    "    # a params line makes each title two lines, so the antibody label has to clear more\n",
+    "    header_dy = 0.055 if any(alpha_line(ab, ag) for ab, ag in cells) else 0.032\n",
+    "    for j, ab in enumerate(grid_abs):\n",
+    "        group_header(fig, [axes[2 * j], axes[2 * j + 1]], ab, dy=header_dy)\n",
+    "\n",
+    "    fig.text(0.5, 0.965, \"Observed vs. predicted affinity for best model fits\",\n",
+    "             ha=\"center\", fontsize=14, color=c_ink, weight=\"bold\")\n",
+    "    fig.legend(handles=[Line2D([0], [0], marker=\"o\", ls=\"\", mfc=antigen_hex[a], mec=\"none\",\n",
+    "                               ms=8, label=a) for a in (\"CH505TF\", \"SF162\")],\n",
+    "               loc=\"upper center\", ncol=2, frameon=False, fontsize=10,\n",
+    "               bbox_to_anchor=(0.5, 0.945), columnspacing=1.6, handletextpad=0.4)\n",
+    "\n",
+    "    for j in range(3):\n",
+    "        pair = [axes[12 + 2 * j].get_position(), axes[13 + 2 * j].get_position()]\n",
+    "        xc = (min(p.x0 for p in pair) + max(p.x1 for p in pair)) / 2\n",
+    "        fig.text(xc, 0.052, xlabel, ha=\"center\", va=\"center\", fontsize=9.5, color=c_ink)\n",
+    "    fig.text(0.022, 0.455, ylabel, ha=\"center\", va=\"center\", rotation=90,\n",
+    "             fontsize=12.5, color=c_ink)\n",
+    "    return fig"
+   ],
+   "id": "ix7SyL-DAXH_"
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "id": "p5kC2lD_AXIA"
+   },
+   "source": [
+    "## Figure 2: selected sites\n",
+    "\n",
+    "`draw_site_panel` puts one complex on an existing axis. `build_site_panel` wraps it in\n",
+    "its own figure for a single plot, and `build_site_figure` lays several out in a row on\n",
+    "a shared axis range. The site can be an index 0 to 9 or a label like `N52K`."
+   ],
+   "id": "p5kC2lD_AXIA"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "id": "kapMBxWGAXIA"
+   },
+   "outputs": [],
+   "source": [
+    "#Observed vs predicted for one complex, split by germline or mutant at one site\n",
+    "def draw_site_panel(ax, ab, ag, site, lo=None, hi=None, show_ylabel=True):\n",
+    "    k = site_index(ab, site)\n",
+    "    lab = site_labels(ab)[k]\n",
+    "    d = load_complex(ab, ag)\n",
+    "    if lo is None or hi is None:\n",
+    "        lo, hi = shared_range([d])\n",
+    "        lo = min(lo, floor - jitter_band - 0.04)\n",
+    "\n",
+    "    style_axes(ax, lo, hi)\n",
+    "    ax.axvline(floor, color=c_line, lw=0.8, ls=(0, (4, 3)), zorder=1)\n",
+    "    ax.axhline(floor, color=c_line, lw=0.8, ls=(0, (4, 3)), zorder=1)\n",
+    "\n",
+    "    x, y = jitter_censored(d[\"obs\"], d[\"pred\"], np.random.default_rng(jitter_seed))\n",
+    "    mut = np.array([g[k] == \"M\" for g in d[\"geno\"]])\n",
+    "    ax.scatter(x[~mut], y[~mut], s=10, c=germ_hex, alpha=0.6, linewidths=0, zorder=2)\n",
+    "    ax.scatter(x[mut], y[mut], s=10, c=mut_hex, alpha=0.6, linewidths=0, zorder=3)\n",
+    "\n",
+    "    ax.set_title(f\"Antibody: {ab}\\nAntigen: {ag}\", fontsize=9, color=c_ink, pad=6)\n",
+    "    ax.set_xlabel(xlabel, fontsize=8, color=c_ink)\n",
+    "    if show_ylabel:\n",
+    "        ax.set_ylabel(ylabel, fontsize=10, color=c_ink, labelpad=10)\n",
+    "    ax.legend(handles=[Line2D([0], [0], marker=\"o\", ls=\"\", mfc=germ_hex, mec=\"none\",\n",
+    "                              ms=6, label=f\"\\u2212{lab}\"),\n",
+    "                       Line2D([0], [0], marker=\"o\", ls=\"\", mfc=mut_hex, mec=\"none\",\n",
+    "                              ms=6, label=f\"+{lab}\")],\n",
+    "              loc=\"upper left\", fontsize=7.5, frameon=True, framealpha=0.9,\n",
+    "              edgecolor=c_line, handletextpad=0.4, borderpad=0.5)\n",
+    "    return ax\n",
+    "\n",
+    "# One standalone selected-site figure, for any antibody, antigen, and site\n",
+    "def build_site_panel(ab, ag, site):\n",
+    "    fig = plt.figure(figsize=(4.2, 4.4))\n",
+    "    draw_site_panel(fig.add_subplot(111), ab, ag, site)\n",
+    "    fig.subplots_adjust(left=0.20, right=0.96, top=0.82, bottom=0.16)\n",
+    "    return fig\n",
+    "\n",
+    "# Row of selected-site panels sharing one axis range, as used in the supplement\n",
+    "def build_site_figure(specs):\n",
+    "    data = [load_complex(ab, ag) for ab, ag, _ in specs]\n",
+    "    lo, hi = shared_range(data)\n",
+    "    lo = min(lo, floor - jitter_band - 0.04)\n",
+    "\n",
+    "    fig = plt.figure(figsize=(3.3 * len(specs), 4.1))\n",
+    "    gs = gridspec.GridSpec(1, len(specs), figure=fig, wspace=0.30,\n",
+    "                           left=0.10, right=0.99, top=0.78, bottom=0.17)\n",
+    "    for j, (ab, ag, site) in enumerate(specs):\n",
+    "        draw_site_panel(fig.add_subplot(gs[0, j]), ab, ag, site, lo, hi,\n",
+    "                        show_ylabel=(j == 0))\n",
+    "    fig.text(0.5, 0.955, \"Observed vs. predicted fits at selected sites\",\n",
+    "             ha=\"center\", fontsize=12.5, color=c_ink, weight=\"bold\")\n",
+    "    return fig"
+   ],
+   "id": "kapMBxWGAXIA"
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "id": "knf2hzPTAXIA"
+   },
+   "source": [
+    "## Build the supplement figures"
+   ],
+   "id": "knf2hzPTAXIA"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "id": "zK3r8R-XAXIA"
+   },
+   "outputs": [],
+   "source": [
+    "save_figure(build_grid(), \"obs_pred_full\")\n",
+    "save_figure(build_site_figure(site_specs), \"obs_pred_selected\")"
+   ],
+   "id": "zK3r8R-XAXIA"
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "id": "gLHej5DRAXIB"
+   },
+   "source": [
+    "## One panel, any antibody and site\n",
+    "\n",
+    "Pass a label or an index. `site_labels` lists what is available for an antibody."
+   ],
+   "id": "gLHej5DRAXIB"
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "id": "_ShE7TMtAXIB"
+   },
+   "outputs": [],
+   "source": [
+    "print(site_labels(\"1NC9\"))\n",
+    "build_site_panel(\"1NC9\", \"CH505TF\", \"S56R\")\n",
+    "plt.show()"
+   ],
+   "id": "_ShE7TMtAXIB"
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "name": "python",
+   "version": "3.11"
+  },
+  "colab": {
+   "provenance": []
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
